@@ -1,0 +1,109 @@
+# TASK LIST, NOT PLAYBOOK! TO BE IMPORTED INTO OTHER PLAYS
+
+- name: Check if VM exists
+  command: qm status {{ vm.vm_id }}
+  register: vm_exists
+  ignore_errors: true
+  changed_when: false
+
+- name: Stop VM if running
+  command: qm stop {{ vm.vm_id }} --skiplock
+  ignore_errors: true
+  when: vm_exists.rc == 0
+
+- name: Remove existing VM
+  command: qm destroy {{ vm.vm_id }} --purge --skiplock
+  ignore_errors: true
+  when: vm_exists.rc == 0
+
+- name: Clone VM from template
+  command: qm clone {{ template_id }} {{ vm.vm_id }} --name {{ vm.name }} --full
+
+- name: Create VM-specific cloud-init user-data with hostname
+  copy:
+    content: |
+      #cloud-config
+      hostname: {{ vm.name }}
+      fqdn: {{ vm.name }}
+      manage_etc_hosts: true
+      ssh_pwauth: true
+      users:
+        - name: {{ ci_user }}
+          lock_passwd: false
+          sudo: ALL=(ALL) NOPASSWD:ALL
+          shell: /bin/bash
+          home: /home/{{ ci_user }}
+          create_home: true
+      chpasswd:
+        list: |
+          {{ ci_user }}:{{ ci_password }}
+        expire: false
+      resolv_conf:
+        nameservers:
+          - '<PRIMARY_DNS_IP>'
+          - '<SECONDARY_DNS_IP>'
+      runcmd:
+        - |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent
+          systemctl enable --now qemu-guest-agent
+        - |
+          hostnamectl set-hostname {{ vm.name }}
+          echo "{{ vm.name }}" > /etc/hostname
+          sed -i 's/^127.0.1.1.*/127.0.1.1\t{{ vm.name }}/' /etc/hosts || echo "127.0.1.1\t{{ vm.name }}" >> /etc/hosts
+          # Ensure SSH password authentication is enabled
+          sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+          sed -i 's/^#\?UsePAM .*/UsePAM yes/' /etc/ssh/sshd_config
+          mkdir -p /etc/ssh/sshd_config.d
+          echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-password-auth.conf
+          echo 'ChallengeResponseAuthentication no' >> /etc/ssh/sshd_config.d/99-password-auth.conf
+          echo 'UsePAM yes' >> /etc/ssh/sshd_config.d/99-password-auth.conf
+          systemctl restart sshd || systemctl restart ssh || service ssh restart || service sshd restart
+          sleep 2
+        - |
+          mkdir -p /etc/systemd/resolved.conf.d
+          echo -e '[Resolve]\nDNS=<PRIMARY_DNS_IP> <SECONDARY_DNS_IP>' > /etc/systemd/resolved.conf.d/dns.conf
+          systemctl restart systemd-resolved || true
+        - |
+          if [ -f /etc/netplan/50-cloud-init.yaml ]; then
+            grep -q "nameservers:" /etc/netplan/50-cloud-init.yaml || sed -i '/ethernets:/a\      nameservers:\n        addresses: [<PRIMARY_DNS_IP>, <SECONDARY_DNS_IP>]' /etc/netplan/50-cloud-init.yaml
+            netplan apply || true
+          fi
+    dest: /var/lib/vz/snippets/ci_userdata_{{ vm.vm_id }}.yml
+    mode: '0644'
+
+- name: Configure VM
+  command: >
+    qm set {{ vm.vm_id }}
+    --cores {{ vm.cpu }}
+    --memory {{ vm.memory }}
+    --ipconfig0 ip={{ vm.ip }}/24,gw=<VM_GATEWAY_IP>
+    --cipassword {{ ci_password }}
+    --ciuser {{ ci_user }}
+    --agent enabled=1
+    --cicustom "user=local:snippets/ci_userdata_{{ vm.vm_id }}.yml"
+
+- name: Resize storage
+  command: qm resize {{ vm.vm_id }} scsi0 {{ vm.storage_size }}
+
+- name: Update cloud-init to run on next boot
+  command: qm cloudinit update {{ vm.vm_id }}
+  ignore_errors: true
+
+- name: Configure GPU passthrough
+  vars:
+    gpu_devices: "{{ (target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='gpu_device_ids') | first) | list }}"
+  command: >
+    qm set {{ vm.vm_id }}
+    {% for index in range(gpu_devices | length) %}
+    -hostpci{{ index }} {{ gpu_devices[index] }}
+    {% endfor %}
+  when: vm.gpu | default(false)
+
+- name: Display GPU passthrough configuration
+  debug:
+    msg: "Configured {{ gpu_devices | length }} GPU devices: {{ gpu_devices }}"
+  when: vm.gpu | default(false)
+  vars:
+    gpu_devices: "{{ (target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='gpu_device_ids') | first) | list }}"

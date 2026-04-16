@@ -1,0 +1,17 @@
+# TASK LIST, NOT PLAYBOOK! TO BE IMPORTED INTO OTHER PLAYS
+
+- name: Check if VM exists
+  command: qm status {{ vm.vm_id }}
+  register: vm_check
+  ignore_errors: true
+  changed_when: false
+
+- name: Stop VM if running
+  command: qm stop {{ vm.vm_id }} --skiplock
+  ignore_errors: true
+  when: vm_check.rc == 0
+
+- name: Destroy VM if it exists
+  command: qm destroy {{ vm.vm_id }} --skiplock --purge
+  ignore_errors: true
+  when: vm_check.rc == 0

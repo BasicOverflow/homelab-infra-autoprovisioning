@@ -1,0 +1,157 @@
+# Cloud Init Template Creation Details
+template_name_prefix: ubuntu-cloud-init
+iso_url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
+iso_name: jammy-server-cloudimg-amd64.img
+ci_user: "<CI_USER>"
+ci_password: "<CI_PASSWORD>"
+
+# Info for PX Nodes Meant to Host Cluster VMs
+# NOTE: for GPU passthrough ONE VM per PX node is allowed to set gpu:true, any gpus listed on the px node will get assigned to that VM
+target_nodes:
+  - name: "proxmox-node-1"
+    # Host: 16 cores, 32 threads, 128 GB RAM
+    # Reserve for host + overhead: ~32 GB RAM, 4 cores
+    # VM budget: 96 GB RAM, 28 threads (NO OVERCOMMIT)
+    template_id: 500
+    template_name: "{{ template_name_prefix }}-proxmox-node-1"
+    template_storage_size: "4G"
+    template_cores: 2
+    template_memory: 4096
+    gpu_device_ids:
+      - "<GPU_PCI_NODE1_1>"
+      - "<GPU_PCI_NODE1_2>" # audio device
+      - "<GPU_PCI_NODE1_3>"
+      - "<GPU_PCI_NODE1_4>" # audio device
+      - "<GPU_PCI_NODE1_5>"
+      - "<GPU_PCI_NODE1_6>" # audio device
+
+    vms:
+      - name: "vm-01"
+        vm_id: 510
+        cpu: 12
+        memory: 43008  # 42 GB 
+        storage_size: 64G
+        ip: "<VM_IP_01>"
+        gpu: false
+
+      - name: "vm-02"
+        vm_id: 511
+        cpu: 2
+        memory: 4096  # 4 GB
+        storage_size: 16G
+        ip: "<VM_IP_02>"
+        gpu: false
+
+      - name: "vm-03-gpu"
+        vm_id: 513
+        cpu: 12
+        memory: 43008  # 42 GB 
+        storage_size: 64G
+        ip: "<VM_IP_03>"
+        gpu: true
+
+      - name: "vm-04-storage"
+        vm_id: 518
+        cpu: 2
+        memory: 8192  # 8 GB
+        storage_size: 350G
+        ip: "<VM_IP_04>"
+        gpu: false
+
+# ----------------------------------------------------------------------------------------------------------------------------
+
+  - name: "proxmox-node-2"
+    # Host: 24 cores (8P+16E), 32 threads, 64 GB RAM
+    # Reserve for host + overhead: ~12 GB RAM, 2 cores
+    # VM budget: 52 GB RAM, 30 threads (NO OVERCOMMIT)
+    template_id: 501
+    template_name: "{{ template_name_prefix }}-proxmox-node-2"
+    template_storage_size: "4G"
+    template_cores: 2
+    template_memory: 4096
+    gpu_device_ids:
+      - "<GPU_PCI_NODE2_1>"
+      - "<GPU_PCI_NODE2_2>" # audio device
+      - "<GPU_PCI_NODE2_3>"
+      - "<GPU_PCI_NODE2_4>" # audio device
+
+    vms:
+      - name: "vm-05"
+        vm_id: 515
+        cpu: 2
+        memory: 4096  # 4 GB
+        storage_size: 16G
+        ip: "<VM_IP_05>"
+        gpu: false
+
+      - name: "vm-06"
+        vm_id: 514
+        cpu: 13
+        memory: 20480  # 20 GB
+        storage_size: 64G
+        ip: "<VM_IP_06>"
+        gpu: false
+
+      - name: "vm-07-gpu"
+        vm_id: 517
+        cpu: 13
+        memory: 20480  # 20 GB
+        storage_size: 64G
+        ip: "<VM_IP_07>"
+        gpu: true
+
+      - name: "vm-08-storage"
+        vm_id: 519
+        cpu: 2
+        memory: 8192  # 8 GB
+        storage_size: 350G
+        ip: "<VM_IP_08>"
+        gpu: false
+
+# ----------------------------------------------------------------------------------------------------------------------------
+
+  - name: "proxmox-node-3"
+    # Host: 16 threads, 96 GB RAM
+    # Reserve for host + overhead: ~16 GB RAM, 2 cores
+    # VM budget: 80 GB RAM, 14 threads (NO OVERCOMMIT)
+    template_id: 502
+    template_name: "{{ template_name_prefix }}-proxmox-node-3"
+    template_storage_size: "4G"
+    template_cores: 2
+    template_memory: 4096
+    gpu_device_ids:
+      - "<GPU_PCI_NODE3_1>"
+      - "<GPU_PCI_NODE3_2>" # audio device
+
+    vms:
+      - name: "vm-09"
+        vm_id: 520
+        cpu: 5
+        memory: 34816  # 34 GB
+        storage_size: 64G
+        ip: "<VM_IP_09>"
+        gpu: false
+
+      - name: "vm-10"
+        vm_id: 521
+        cpu: 2
+        memory: 4096  # 4 GB
+        storage_size: 16G
+        ip: "<VM_IP_10>"
+        gpu: false
+
+      - name: "vm-11-gpu"
+        vm_id: 523
+        cpu: 5
+        memory: 34816  # 34 GB
+        storage_size: 64G
+        ip: "<VM_IP_11>"
+        gpu: true
+
+      - name: "vm-12-storage"
+        vm_id: 524
+        cpu: 2
+        memory: 8192  # 8 GB
+        storage_size: 350G
+        ip: "<VM_IP_12>"
+        gpu: false

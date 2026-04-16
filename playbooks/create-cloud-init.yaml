@@ -1,0 +1,121 @@
+# TASK LIST, NOT PLAYBOOK! TO BE IMPORTED INTO OTHER PLAYS
+
+- name: Update package cache and install libguestfs-tools
+  apt:
+    update_cache: yes
+    name: libguestfs-tools
+    state: present
+    
+- name: Check if template exists
+  command: qm status {{ template_id }}
+  register: template_exists
+  ignore_errors: true
+  changed_when: false
+
+- name: Remove existing template
+  command: qm destroy {{ template_id }} --purge --skiplock
+  ignore_errors: true
+  when: template_exists.rc == 0
+
+- name: Check if cloud image exists
+  stat:
+    path: "{{ iso_name }}"
+  register: image_file
+
+- name: Download cloud image
+  get_url:
+    url: "{{ iso_url }}"
+    dest: "{{ iso_name }}"
+  when: not image_file.stat.exists
+
+- name: Enable SSH password authentication in base image
+  command: >
+    virt-customize -a {{ iso_name }}
+    --run-command "mkdir -p /etc/ssh/sshd_config.d &&
+                   echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-password-auth.conf &&
+                   echo 'ChallengeResponseAuthentication no' >> /etc/ssh/sshd_config.d/99-password-auth.conf &&
+                   echo 'UsePAM yes' >> /etc/ssh/sshd_config.d/99-password-auth.conf &&
+                   sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+                   sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config &&
+                   sed -i 's/^#\?UsePAM .*/UsePAM yes/' /etc/ssh/sshd_config"
+
+- name: Create VM template
+  command: >
+    qm create {{ template_id }}
+    -name {{ template_name }}
+    -memory {{ memory }} 
+    -net0 virtio,bridge=vmbr0
+    -cores {{ cores }}
+    -cpu cputype=kvm64
+    -description 'Ubuntu 22.04 cloud-init template'
+    -storage local
+    -onboot 1
+
+- name: Import disk
+  command: qm importdisk {{ template_id }} {{ iso_name }} local --format qcow2
+
+- name: Configure VM storage and boot
+  command: qm set {{ template_id }} --scsihw virtio-scsi-pci --scsi0 local:{{ template_id }}/vm-{{ template_id }}-disk-0.qcow2 --boot c --bootdisk scsi0
+
+- name: Resize storage
+  command: qm resize {{ template_id }} scsi0 {{ storage_size }}
+
+- name: Ensure snippets directory exists
+  file:
+    path: /var/lib/vz/snippets
+    state: directory
+    mode: '0755'
+
+- name: Create cloud-init user-data with password and SSH config
+  copy:
+    content: |
+      #cloud-config
+      ssh_pwauth: true
+      users:
+        - name: {{ ci_user }}
+          lock_passwd: false
+          sudo: ALL=(ALL) NOPASSWD:ALL
+          shell: /bin/bash
+          home: /home/{{ ci_user }}
+          create_home: true
+      chpasswd:
+        list: |
+          {{ ci_user }}:{{ ci_password }}
+        expire: false
+      resolv_conf:
+        nameservers:
+          - '<PRIMARY_DNS_IP>'
+          - '<SECONDARY_DNS_IP>'
+      runcmd:
+        - |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent
+          systemctl enable --now qemu-guest-agent
+        - |
+          # Ensure SSH password authentication is enabled
+          sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#\?ChallengeResponseAuthentication .*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+          sed -i 's/^#\?UsePAM .*/UsePAM yes/' /etc/ssh/sshd_config
+          mkdir -p /etc/ssh/sshd_config.d
+          echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-password-auth.conf
+          echo 'ChallengeResponseAuthentication no' >> /etc/ssh/sshd_config.d/99-password-auth.conf
+          echo 'UsePAM yes' >> /etc/ssh/sshd_config.d/99-password-auth.conf
+          systemctl restart sshd || systemctl restart ssh || service ssh restart || service sshd restart
+          sleep 2
+        - |
+          mkdir -p /etc/systemd/resolved.conf.d
+          echo -e '[Resolve]\nDNS=<PRIMARY_DNS_IP> <SECONDARY_DNS_IP>' > /etc/systemd/resolved.conf.d/dns.conf
+          systemctl restart systemd-resolved || true
+        - |
+          if [ -f /etc/netplan/50-cloud-init.yaml ]; then
+            grep -q "nameservers:" /etc/netplan/50-cloud-init.yaml || sed -i '/ethernets:/a\      nameservers:\n        addresses: [<PRIMARY_DNS_IP>, <SECONDARY_DNS_IP>]' /etc/netplan/50-cloud-init.yaml
+            netplan apply || true
+          fi
+    dest: /var/lib/vz/snippets/ci_userdata_{{ template_id }}.yml
+    mode: '0644'
+
+- name: Configure cloud-init
+  command: qm set {{ template_id }} --ide2 local:cloudinit --cipassword {{ ci_password }} --ciuser {{ ci_user }} --serial0 socket --agent enabled=1 --cicustom "user=local:snippets/ci_userdata_{{ template_id }}.yml"
+
+- name: Convert to template
+  command: qm template {{ template_id }}

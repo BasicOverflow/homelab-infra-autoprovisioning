@@ -1,0 +1,137 @@
+# # TASK LIST, NOT PLAYBOOK! TO BE IMPORTED INTO OTHER PLAYS
+
+- name: Install required packages
+  apt:
+    name:
+      - linux-headers-generic
+      - build-essential
+      - dkms
+    state: present
+    update_cache: yes
+  become: true
+
+- name: Download NVIDIA driver
+  get_url:
+    url: "https://us.download.nvidia.com/XFree86/Linux-x86_64/{{ driver_version }}/NVIDIA-Linux-x86_64-{{ driver_version }}.run"
+    dest: "/tmp/NVIDIA-Linux-x86_64-{{ driver_version }}.run"
+    mode: '0755'
+  become: true
+
+- name: Install NVIDIA driver
+  command:
+    cmd: "/tmp/NVIDIA-Linux-x86_64-{{ driver_version }}.run --silent --no-nouveau-check --no-cc-version-check"
+  args:
+    creates: "/usr/bin/nvidia-smi"
+  become: true
+
+- name: Install CUDA toolkit
+  apt:
+    name: nvidia-cuda-toolkit
+    state: present
+  become: true
+
+- name: Test NVIDIA GPU
+  command: nvidia-smi
+  register: nvidia_smi_output
+  become: true
+  ignore_errors: true
+
+- name: Display nvidia-smi output
+  debug:
+    var: nvidia_smi_output.stdout_lines
+  when: nvidia_smi_output.rc == 0
+
+- name: Verify CUDA installation
+  command: nvcc --version
+  register: nvcc_output
+  become: true
+  ignore_errors: true
+  changed_when: false
+
+- name: Display CUDA version
+  debug:
+    var: nvcc_output.stdout_lines
+  when: nvcc_output.rc == 0
+
+- name: Add NVIDIA Docker GPG key
+  apt_key:
+    url: https://nvidia.github.io/nvidia-docker/gpgkey
+    state: present
+  become: true
+
+- name: Add NVIDIA Docker repository
+  apt_repository:
+    repo: "deb https://nvidia.github.io/libnvidia-container/stable/ubuntu18.04/$(ARCH) /"
+  become: true
+
+- name: Install NVIDIA Container Toolkit
+  apt:
+    name: nvidia-container-toolkit
+    state: present
+  become: true
+
+- name: Restart Docker to apply NVIDIA Docker changes
+  service:
+    name: docker
+    state: restarted
+  become: true
+
+- name: Install nvtop
+  apt:
+    name: nvtop
+    state: present
+    update_cache: yes
+  become: true
+
+- name: Check NVIDIA kernel modules
+  shell: lsmod | grep nvidia
+  register: nvidia_modules
+  ignore_errors: true
+  changed_when: false
+  become: true
+
+- name: Check NVIDIA driver version
+  command: cat /proc/driver/nvidia/version
+  register: nvidia_driver_version
+  ignore_errors: true
+  changed_when: false
+  become: true
+
+- name: Verify NVIDIA Container Toolkit installation
+  shell: dpkg -l | grep nvidia-container-toolkit
+  register: nvidia_container_toolkit
+  ignore_errors: true
+  changed_when: false
+  become: true
+
+- name: Test NVIDIA Docker hello-world
+  command: docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 echo "NVIDIA Docker hello-world successful"
+  register: nvidia_docker_hello
+  become: true
+  ignore_errors: true
+
+- name: Verify NVIDIA Docker installation
+  command: docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+  register: nvidia_docker_test_output
+  become: true
+  ignore_errors: true
+
+- name: Count detected GPUs
+  shell: nvidia-smi --list-gpus | wc -l
+  register: gpu_count
+  ignore_errors: true
+  changed_when: false
+  become: true
+
+- name: Display test results
+  debug:
+    msg:
+      - "nvidia-smi installed: {{ 'YES' if nvidia_smi_output.rc == 0 else 'NO' }}"
+      - "GPUs detected: {{ gpu_count.stdout.strip() if gpu_count.rc == 0 else 'UNKNOWN' }}"
+      - "NVIDIA modules loaded: {{ 'YES' if nvidia_modules.rc == 0 else 'NO' }}"
+      - "NVIDIA Container Toolkit: {{ 'INSTALLED' if nvidia_container_toolkit.rc == 0 else 'NOT INSTALLED' }}"
+      - "NVIDIA Docker hello-world: {{ 'OK' if nvidia_docker_hello.rc == 0 else 'FAILED' }}"
+      - "Docker GPU access (nvidia-smi): {{ 'OK' if nvidia_docker_test_output.rc == 0 else 'FAILED' }}"
+
+
+

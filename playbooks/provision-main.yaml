@@ -1,0 +1,162 @@
+- name: Create Cloud Init Template on each Proxmox node
+  hosts: proxmox-nodes
+  gather_facts: false
+  environment:
+    ANSIBLE_HOST_KEY_CHECKING: "False"
+  tasks:
+    - name: Create Cloud Init Template
+      ansible.builtin.include_tasks:
+        file: create-cloud-init.yaml
+      vars:
+        template_id: "{{ item.template_id }}"
+        template_name: "{{ item.template_name }}"
+        storage_size: "{{ item.template_storage_size }}"
+        cores: "{{ item.template_cores }}"
+        memory: "{{ item.template_memory }}"
+      loop: "{{ target_nodes | selectattr('name', '==', inventory_hostname) | list }}"
+
+- name: Destroy VMs if they exist
+  hosts: proxmox-nodes
+  gather_facts: false
+  environment:
+    ANSIBLE_HOST_KEY_CHECKING: "False"
+  tasks:
+    - name: Delete VMs If They Exist
+      ansible.builtin.include_tasks:
+        file: destroy-vm.yaml
+      loop: "{{ target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='vms') | first }}"
+      loop_control:
+        loop_var: vm
+
+- name: Create and Configure VM Clones
+  hosts: proxmox-nodes
+  gather_facts: false
+  environment:
+    ANSIBLE_HOST_KEY_CHECKING: "False"
+  tasks:
+    - name: Clone and Configure VMs for each Target Node
+      ansible.builtin.include_tasks:
+        file: clone-and-configure-vm.yaml
+      loop: "{{ target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='vms') | first }}"
+      loop_control:
+        loop_var: vm
+      vars:
+        template_id: "{{ target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='template_id') | first }}"
+
+- name: Start VMs on Proxmox Nodes
+  hosts: proxmox-nodes
+  gather_facts: false
+  environment:
+    ANSIBLE_HOST_KEY_CHECKING: "False"
+  tasks:
+    - name: Start VMs
+      command: qm start {{ vm.vm_id }}
+      loop: "{{ target_nodes | selectattr('name', '==', inventory_hostname) | map(attribute='vms') | first }}"
+      loop_control:
+        loop_var: vm
+      ignore_errors: true
+
+- name: Clean SSH known_hosts for k3s VMs
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Remove old host keys
+      shell: ssh-keygen -R {{ item }} 2>/dev/null || true
+      loop: "{{ groups['k3s-nodes'] + groups['k3s-nv-nodes'] }}"
+      changed_when: false
+
+- name: Install QEMU Guest Agent on all VMs
+  hosts: k3s-nodes:k3s-nv-nodes
+  gather_facts: false
+  become: yes
+  vars:
+    ansible_ssh_user: "{{ ci_user }}"
+    ansible_ssh_password: "{{ ci_password }}"
+    ansible_become_password: "{{ ci_password }}"
+    ansible_ssh_private_key_file: ""
+    ansible_ssh_common_args: "-o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no -o ControlPath=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null"
+    ansible_remote_tmp: "/tmp/.ansible-{{ ci_user }}"
+  tasks:
+    - name: Wait for SSH port to be open
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 30
+        timeout: 180
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: Wait for password authentication to be ready
+      raw: echo "SSH ready"
+      register: ssh_auth_check
+      until: ssh_auth_check is succeeded
+      retries: 30
+      delay: 10
+      ignore_errors: false
+
+    - name: Set hostname from VM name
+      set_fact:
+        vm_name: "{{ target_nodes | map(attribute='vms') | flatten | selectattr('ip', '==', inventory_hostname) | map(attribute='name') | first }}"
+
+    - name: Configure hostname
+      raw: |
+        hostnamectl set-hostname {{ vm_name }}
+        echo "{{ vm_name }}" > /etc/hostname
+        sed -i 's/^127.0.1.1.*/127.0.1.1\t{{ vm_name }}/' /etc/hosts || echo "127.0.1.1\t{{ vm_name }}" >> /etc/hosts
+      ignore_errors: true
+      when: vm_name is defined
+
+    - name: Configure DNS
+      raw: |
+        systemctl stop systemd-resolved || true
+        systemctl disable systemd-resolved || true
+        rm -f /etc/resolv.conf
+        echo "nameserver <PRIMARY_DNS_IP>" > /etc/resolv.conf
+        echo "nameserver <SECONDARY_DNS_IP>" >> /etc/resolv.conf
+        chattr +i /etc/resolv.conf 2>/dev/null || true
+        sleep 2
+      ignore_errors: true
+
+    - name: Install and enable qemu-guest-agent
+      raw: |
+        timeout 60 apt-get update || true
+        timeout 120 DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent || true
+        systemctl enable --now qemu-guest-agent || true
+      ignore_errors: true
+
+- name: Install Docker & Compose on all nodes
+  hosts: k3s-nv-nodes:k3s-nodes
+  gather_facts: true
+  become: yes
+  vars:
+    ansible_ssh_user: "{{ ci_user }}"
+    ansible_ssh_password: "{{ ci_password }}"
+    ansible_become_password: "{{ ci_password }}"
+    ansible_ssh_private_key_file: ""
+    ansible_ssh_common_args: "-o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no -o ControlPath=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null"
+    ansible_remote_tmp: "/tmp/.ansible-{{ ci_user }}"
+  tasks:
+    - name: Install Docker & Docker Compose
+      ansible.builtin.include_tasks:
+        file: misc/docker.yaml
+
+- name: Setup NVIDIA drivers and test GPU on GPU-enabled VMs
+  hosts: k3s-nv-nodes
+  gather_facts: false
+  become: yes
+  vars:
+    ansible_ssh_user: "{{ ci_user }}"
+    ansible_ssh_password: "{{ ci_password }}"
+    ansible_become_password: "{{ ci_password }}"
+    ansible_ssh_private_key_file: ""
+    ansible_ssh_common_args: "-o PreferredAuthentications=password -o PubkeyAuthentication=no -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no -o ControlPath=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null"
+    ansible_remote_tmp: "/tmp/.ansible-{{ ci_user }}"
+    driver_version: "550.107.02"
+  tasks:
+    - name: Setup NVIDIA drivers and NVIDIA Docker and test GPU
+      ansible.builtin.include_tasks:
+        file: misc/nvidia-setup.yaml
+
+
+
+# ansible-playbook -i inventory/hosts playbooks/provision-main.yaml -e @group-vars/all.yaml
