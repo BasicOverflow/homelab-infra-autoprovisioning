@@ -1,4 +1,7 @@
-# homelab-infra-autoprovisioning
+# Homelab Infra Autoprovisioning
 
-k3s branch: hold ansible scripts to provision k3s cluster on selected vms/nodes
-proxmox: holds ansible scripts to provision vms with purpose of running k3s on them
+This repository contains lightweight Ansible automation for homelab infrastructure provisioning.
+
+- `proxmox` branch: provisions and configures Proxmox VMs intended to host cluster workloads
+- `k3s` branch: forked and modified by me to provision and configure the k3s cluster on selected VMs/nodes
+
